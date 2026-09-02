@@ -18,6 +18,7 @@ To enable `package-loading-notifier`, add following in your `.emacs` file:
     (package-loading-notifier-mode 1)
 
 ## Add more packages
-To add more packages for `package-loading-notifier`, set `package-loading-notifier-packages` variable.
+To add more packages for `package-loading-notifier`, set `package-loading-notifier-packages` variable before enabling the mode.
 
     (setq package-loading-notifier-packages '(org magit yasnippet))
+    (package-loading-notifier-mode 1)
