@@ -4,7 +4,7 @@
 ;; URL: https://github.com/tttuuu888/package-loading-notifier
 ;; Version: 0.3.0
 ;; Keywords: convenience faces config startup
-;; Package-Requires: ((emacs "25"))
+;; Package-Requires: ((emacs "25.1"))
 
 ;; This file is not part of GNU Emacs
 
@@ -32,7 +32,7 @@
 
 ;;; Code:
 
-(require 'subr-x)
+(require 'seq)
 
 (defgroup package-loading-notifier nil
   "Notify a package is being loaded."
@@ -55,61 +55,83 @@
   "Face used to notify a package is being loaded."
   :group 'package-loading-notifier)
 
-(defun package-loading-notifier--notify (pkg old &rest r)
-  "Notify a PKG is being loaded and execute OLD with rest arguments R."
-  (let ((msg (capitalize (format package-loading-notifier-format pkg)))
-        (ovr (make-overlay (point) (point)))
-        (ret nil))
-    (setq package-loading-notifier-packages
-          (delq pkg package-loading-notifier-packages))
-    (unless package-loading-notifier-packages
-      (package-loading-notifier-mode -1))
-    (message msg)
+(defvar package-loading-notifier--pending nil
+  "Packages still waiting to be notified.")
+
+(defun package-loading-notifier--file-regexp (pkg)
+  "Return a regexp matching the library file of PKG."
+  (format "/%s\\.elc?\\(?:\\.gz\\)?\\'" (regexp-quote (symbol-name pkg))))
+
+(defun package-loading-notifier--pending-package (file)
+  "Return the pending package whose library file is FILE, or nil."
+  (let ((case-fold-search nil))
+    (seq-find (lambda (pkg) (string-match-p
+                             (package-loading-notifier--file-regexp pkg) file))
+              package-loading-notifier--pending)))
+
+(defun package-loading-notifier--update ()
+  "Make `file-name-handler-alist' watch exactly the pending packages."
+  (setq file-name-handler-alist
+        (rassq-delete-all #'package-loading-notifier--handler
+                          file-name-handler-alist))
+  (when package-loading-notifier--pending
+    (push (cons (mapconcat #'package-loading-notifier--file-regexp
+                           package-loading-notifier--pending "\\|")
+                #'package-loading-notifier--handler)
+          file-name-handler-alist)))
+
+(defun package-loading-notifier--notify (pkg fn args)
+  "Notify that PKG is being loaded while calling FN with ARGS."
+  (let* ((msg (capitalize (format package-loading-notifier-format pkg)))
+         (win (selected-window))
+         (ovr (with-current-buffer (window-buffer win)
+                (make-overlay (window-point win) (window-point win)))))
+    (overlay-put ovr 'window win)
     (overlay-put ovr 'after-string
                  (propertize msg 'face 'package-loading-notifier-face))
-    (redisplay)
+    (message "%s" msg)
+    (redisplay t)
     (unwind-protect
-        (setq ret (apply old r))
-      (delete-overlay ovr))
-    ret))
+        (apply fn args)
+      (delete-overlay ovr))))
 
-(defun package-loading-notifier--require (old &rest r)
-  "Notifier for `require' function.
-If the package is not a member of
-`package-loading-notifier-packages', just execute OLD with rest
-arguments R."
-  (let ((pkg (car r)))
-    (if (not (member pkg package-loading-notifier-packages))
-        (apply old r)
-      (apply #'package-loading-notifier--notify pkg old r))))
-
-(defun package-loading-notifier--find-file (old &rest r)
-  "Notifier for all kind of `find-file' functions.
-If the package is not a member of
-`package-loading-notifier-packages', just execute OLD with rest
-arguments R."
-  (let* ((file-name (car r))
-         (mode (when (stringp file-name)
-                 (assoc-default file-name auto-mode-alist 'string-match)))
-         (pkg (when (and mode (symbolp mode))
-                (plist-get (symbol-function mode) 'autoload)))
-         (pkg (when (stringp pkg)
-                (intern pkg))))
-    (if (not (member pkg package-loading-notifier-packages))
-        (apply old r)
-      (apply #'package-loading-notifier--notify pkg old r))))
+(defun package-loading-notifier--handler (operation &rest args)
+  "File name handler notifying that a pending package is being loaded.
+Catches `require', `load', and autoloads via the `load' OPERATION.
+ARGS are passed to OPERATION."
+  (let ((pkg (and (eq operation 'load)
+                  (package-loading-notifier--pending-package (car args)))))
+    (if (not pkg)
+        ;; Not ours: run the real OPERATION, skipping this handler.
+        (let ((inhibit-file-name-handlers
+               (cons #'package-loading-notifier--handler
+                     (and (eq inhibit-file-name-operation operation)
+                          inhibit-file-name-handlers)))
+              (inhibit-file-name-operation operation))
+          (apply operation args))
+      ;; Ours: stop watching PKG, then load it with a notification.
+      (setq package-loading-notifier--pending
+            (remq pkg package-loading-notifier--pending))
+      (package-loading-notifier--update)
+      (package-loading-notifier--notify pkg #'load args))))
 
 ;;;###autoload
 (define-minor-mode package-loading-notifier-mode
-  "Notify a package is being loaded."
+  "Notify a package is being loaded.
+Set `package-loading-notifier-packages' before enabling the mode."
   :init-value nil
   :global t
   (if package-loading-notifier-mode
       (progn
-        (advice-add 'require :around #'package-loading-notifier--require)
-        (advice-add 'find-file-noselect :around #'package-loading-notifier--find-file))
-    (advice-remove 'require #'package-loading-notifier--require)
-    (advice-remove 'find-file-noselect #'package-loading-notifier--find-file)))
+        (setq package-loading-notifier--pending
+              package-loading-notifier-packages)
+        ;; Init files that reset `file-name-handler-alist' during startup would
+        ;; drop the entry, so put it back once startup is over.
+        (unless after-init-time
+          (add-hook 'emacs-startup-hook #'package-loading-notifier--update t)))
+    (setq package-loading-notifier--pending nil)
+    (remove-hook 'emacs-startup-hook #'package-loading-notifier--update))
+  (package-loading-notifier--update))
 
 (provide 'package-loading-notifier)
 ;;; package-loading-notifier.el ends here
