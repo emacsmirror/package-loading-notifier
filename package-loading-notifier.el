@@ -2,7 +2,7 @@
 
 ;; Author: SeungKi Kim <tttuuu888@gmail.com>
 ;; URL: https://github.com/tttuuu888/package-loading-notifier
-;; Version: 0.3.0
+;; Version: 0.4.0
 ;; Keywords: convenience faces config startup
 ;; Package-Requires: ((emacs "25.1"))
 
